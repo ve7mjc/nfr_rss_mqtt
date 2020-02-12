@@ -1,6 +1,6 @@
-#!/usr/bin/python3
+#!./venv/bin/python
 
-# scrape Nanaimo Fire Rescue Incidents RSS feed to format into an AMQP Exchange
+# scrape Nanaimo Fire Rescue Incidents RSS feed to format
 
 import paho.mqtt.client as mqtt
 
@@ -10,6 +10,39 @@ from datetime import datetime
 from time import mktime
 from dateutil.parser import parse # for ISO datetime
 from time import strftime
+
+from pygelf import GelfUdpHandler
+import logging
+import configparser
+
+# configuration file
+configfile='nfr.cfg'
+config = configparser.ConfigParser()
+config.read(configfile)
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger()
+logger.addHandler(GelfUdpHandler(host='127.0.0.1', port=9402))
+if ("general" in config) and ("gelf_logging_host" in config["general"]) and ("gelf_logging_port" in config["general"]):
+    logger.addHandler(GelfUdpHandler(host=config["general"]["gelf_logging_host"], port=int(config["general"]["gelf_logging_port"]), _app_name="pulsepoint"))
+    print("Configured to log to", config["general"]["gelf_logging_host"])
+else:
+    print("NOTICE: Centralized logging is not configured!")
+
+pointerfile='pointer.dat'
+
+# retrieve pointer to last id received
+last_id = 0
+try:
+    with open(pointerfile, 'r') as f:
+        last_id = f.read()  
+except FileNotFoundError:
+    print("Pointer file not found! Assuming 0")
+
+def writePointer(id):
+    with open(pointerfile, 'w') as f:
+        f.write(str(id))
+    return
 
 broker_address="127.0.0.1" 
 url = "https://www.nanaimo.ca/fire_rescue_incidents/Rss"
@@ -43,38 +76,13 @@ def on_connect(client, userdata, flags, rc):
 
 mqttc.on_connect = on_connect
 
-mqttc.username_pw_set("nfr-rss", password="")
-mqttc.connect(broker_address) #connect to broker
+if "mqtt" not in config:
+    print("ERROR: Missing MQTT config!")
+    exit()
+
+mqttc.username_pw_set(config['mqtt']['username'], config['mqtt']['password'])
+mqttc.connect(config['mqtt']['host']) #connect to broker
 mqttc.loop_start()
-
-# entry
-#   title
-#   link_href =""/ (seems to have details/{id}
-#   id (same url)
-#   updated
-#   content type="html"
-#   author (City of Nanaimo)
-#   georss:line
-
-#<entry>
-#<title>700 BLOCK CENTRE ST - Medical Aid</title>
-#<link href="https://www.nanaimo.ca/fire_rescue_incidents/details/35949332"/>
-#<id>
-#https://www.nanaimo.ca/fire_rescue_incidents/details/35949332
-#</id>
-#<updated>2020-01-18T12:10:46-08:00</updated>
-#<content type="html">
-#Nanaimo, BC: Medical Aid incident occurred at or near the address 700 BLOCK CENTRE ST on Saturday, January 18, 2020. The following apparatus were deployed: <ul> <li>R1</li> </ul>
-#</content>
-#<author>
-#<name>City of Nanaimo</name>
-#</author>
-#<georss:line>49.151447 -123.929576 49.149433 -123.929573</georss:line>
-#</entry>
-
-# d.feed.get('title', 'No title')
-
-# d['feed']['title']
 
 def scrape_id(event):
     id = event["link"].strip("https://www.nanaimo.ca/fire_rescue_incidents/details/")
@@ -128,6 +136,9 @@ while 1:
 
         incident = {}
         incident["id"] = scrape_id(event)
+        
+        print(incident["id"])
+        
         if incident["id"] not in incidents:
             # new incident
             print("new incident detected")
@@ -136,11 +147,40 @@ while 1:
             incident["civic_address"] = scrape_civic_address(event)
             incidents[incident["id"]] = incident
 
-            msg = "NFR Event " + scrape_date(event).strftime("%Y-%m-%d %H:%M:%S") + " | " + scrape_type(event) + " | " + scrape_civic_address(event) + " | UNITS " + scrape_apparatus(event)
-            message_queue.append(msg)
+            msg = "NFR " + str(incident["id"]) + " " + scrape_date(event).strftime("%Y-%m-%d %H:%M:%S") + " | " + scrape_type(event) + " | " + scrape_civic_address(event) + " | UNITS " + scrape_apparatus(event)
+            #message_queue.append(msg)
+            writePointer(str(incident["id"]))
             print(msg)
 
     # send messages and then sleep
     send_queued_messages()
     time.sleep(rss_fetch_time_secs)
     
+# entry
+#   title
+#   link_href =""/ (seems to have details/{id}
+#   id (same url)
+#   updated
+#   content type="html"
+#   author (City of Nanaimo)
+#   georss:line
+
+#<entry>
+#<title>700 BLOCK CENTRE ST - Medical Aid</title>
+#<link href="https://www.nanaimo.ca/fire_rescue_incidents/details/35949332"/>
+#<id>
+#https://www.nanaimo.ca/fire_rescue_incidents/details/35949332
+#</id>
+#<updated>2020-01-18T12:10:46-08:00</updated>
+#<content type="html">
+#Nanaimo, BC: Medical Aid incident occurred at or near the address 700 BLOCK CENTRE ST on Saturday, January 18, 2020. The following apparatus were deployed: <ul> <li>R1</li> </ul>
+#</content>
+#<author>
+#<name>City of Nanaimo</name>
+#</author>
+#<georss:line>49.151447 -123.929576 49.149433 -123.929573</georss:line>
+#</entry>
+
+# d.feed.get('title', 'No title')
+
+# d['feed']['title']
