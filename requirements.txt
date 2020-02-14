@@ -1,5 +1,6 @@
 feedparser==5.2.1
 paho-mqtt==1.5.0
 pkg-resources==0.0.0
+pygelf==0.3.6
 python-dateutil==2.8.1
 six==1.14.0

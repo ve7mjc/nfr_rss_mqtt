@@ -14,6 +14,7 @@ from time import strftime
 from pygelf import GelfUdpHandler
 import logging
 import configparser
+import json
 
 # configuration file
 configfile='nfr.cfg'
@@ -22,10 +23,9 @@ config.read(configfile)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger()
-logger.addHandler(GelfUdpHandler(host='127.0.0.1', port=9402))
 if ("general" in config) and ("gelf_logging_host" in config["general"]) and ("gelf_logging_port" in config["general"]):
-    logger.addHandler(GelfUdpHandler(host=config["general"]["gelf_logging_host"], port=int(config["general"]["gelf_logging_port"]), _app_name="pulsepoint"))
-    print("Configured to log to", config["general"]["gelf_logging_host"])
+    logger.addHandler(GelfUdpHandler(host=config["general"]["gelf_logging_host"], port=int(config["general"]["gelf_logging_port"]), _app_name="nfr_rss"))
+    print("Logging GELF to", config["general"]["gelf_logging_host"])
 else:
     print("NOTICE: Centralized logging is not configured!")
 
@@ -35,11 +35,14 @@ pointerfile='pointer.dat'
 last_id = 0
 try:
     with open(pointerfile, 'r') as f:
-        last_id = f.read()  
+        last_id = int(f.read())
 except FileNotFoundError:
     print("Pointer file not found! Assuming 0")
 
 def writePointer(id):
+    id = int(id) # to be sure
+    global last_id
+    last_id = id
     with open(pointerfile, 'w') as f:
         f.write(str(id))
     return
@@ -61,8 +64,6 @@ def send_queued_messages():
 
 # The callback for when the client receives a CONNACK response from the server.
 def on_connect(client, userdata, flags, rc):
-    print("Connected with result code "+str(rc))
-
     # 0: Connection successful 
     # 1: Connection refused - incorrect protocol version 
     # 2: Connection refused - invalid client identifier 
@@ -72,7 +73,10 @@ def on_connect(client, userdata, flags, rc):
     # 6-255: Currently unused   
     
     if rc==0:
+        logger.info("Connected to MQTT broker")
         send_queued_messages()
+    else:
+        logger.error("Error connecting to MQTT broker")
 
 mqttc.on_connect = on_connect
 
@@ -127,28 +131,35 @@ def scrape_civic_address(event):
             mqttc.publish("irc/channel/scanbc-data/msg",msg)
         message_queue = []
 
-while 1:
+logger.info("Started NFR RSS Feed Parser - VE7MJC")
+
+while True:
     
     # retrieve RSS objects
     d = feedparser.parse(url)
     
-    for event in d["entries"]:
+    incidents = d["entries"]
+    incidents.reverse()
+    
+    for event in incidents:
 
         incident = {}
         incident["id"] = scrape_id(event)
-        
-        print(incident["id"])
-        
-        if incident["id"] not in incidents:
+
+        if incident["id"] > last_id:
+        #if incident["id"] not in incidents:
             # new incident
+            logger.info("new NFR event received: %s" % json.dumps(event))
+            
             print("new incident detected")
             incident["date"] = scrape_date(event)
             incident["type"] = scrape_type(event)
             incident["civic_address"] = scrape_civic_address(event)
-            incidents[incident["id"]] = incident
+            # incidents[incident["id"]] = incident
 
-            msg = "NFR " + str(incident["id"]) + " " + scrape_date(event).strftime("%Y-%m-%d %H:%M:%S") + " | " + scrape_type(event) + " | " + scrape_civic_address(event) + " | UNITS " + scrape_apparatus(event)
-            #message_queue.append(msg)
+            msg = "NFR " + str(incident["id"]) + " " + scrape_date(event).strftime("%m-%d %H:%M:%S") + " | " + scrape_type(event) + " | " + scrape_civic_address(event) + " | UNITS " + scrape_apparatus(event)
+            logger.info("Sent NFR Incident: %s" % msg)
+            message_queue.append(msg)
             writePointer(str(incident["id"]))
             print(msg)
 
