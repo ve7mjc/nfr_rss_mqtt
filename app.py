@@ -35,9 +35,13 @@ pointerfile='pointer.dat'
 last_id = 0
 try:
     with open(pointerfile, 'r') as f:
-        last_id = int(f.read())
+        # account for an empty or corrupt pointerfile
+        try:
+            last_id = int(f.read())
+        except:
+            logger.error("error reading pointer file. assuming zero")
 except FileNotFoundError:
-    print("Pointer file not found! Assuming 0")
+    logger.error("pointer file not found. assuming zero")
 
 def writePointer(id):
     id = int(id) # to be sure
